@@ -1,0 +1,3 @@
+docker/elasticsearch/nodes/*
+docker/filebeat/data/meta.json
+docker/filebeat/data/registry/*

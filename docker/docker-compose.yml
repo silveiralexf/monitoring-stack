@@ -1,0 +1,224 @@
+version: '3.7'
+
+volumes:
+  elasticsearch: {}
+  filebeat: {}
+  prometheus: {}
+  grafana: {}
+
+networks:
+  net:
+    driver: overlay
+
+services:
+# -----------------------------------------------------------------------------
+  elasticsearch:
+# -----------------------------------------------------------------------------
+    image: docker.elastic.co/elasticsearch/elasticsearch:7.3.2
+    hostname: elasticsearch
+    environment:
+      - node.name=elasticsearch
+      - discovery.type=single-node
+      - cluster.name=monitoring
+      - bootstrap.memory_lock=true
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+
+    volumes:
+      - ./elasticsearch:/usr/share/elasticsearch/data
+    # ports:
+    #   - 9200:9200/tcp
+    #   - 9300:3200/tcp
+    networks:
+      - net
+# -----------------------------------------------------------------------------
+  elasticsearch_exporter:
+# -----------------------------------------------------------------------------
+    hostname: elasticsearch_exporter
+    image: justwatch/elasticsearch_exporter:1.1.0
+    depends_on:
+      - elasticsearch
+    command:
+     - '--es.uri=http://elasticsearch:9200'
+    # ports:
+    #   - 9114:9114/tcp
+    networks:
+      - net
+
+# -----------------------------------------------------------------------------
+  logstash:
+# -----------------------------------------------------------------------------
+    hostname: logstash
+    image: docker.elastic.co/logstash/logstash:7.3.2
+    depends_on:
+      - elasticsearch
+    volumes:
+      - type: bind
+        source: ./logstash/config/logstash.yml
+        target: /usr/share/logstash/config/logstash.yml
+        read_only: true
+      - type: bind
+        source: ./logstash/pipeline
+        target: /usr/share/logstash/pipeline
+        read_only: true
+    ports:
+      - "5000:5000"
+      - "9600:9600"
+    environment:
+      LS_JAVA_OPTS: "-Xmx256m -Xms256m"
+    networks:
+      - net
+
+# -----------------------------------------------------------------------------
+  filebeat:
+# -----------------------------------------------------------------------------
+    image: docker.elastic.co/beats/filebeat:7.3.2
+    hostname: filebeat
+    user: root
+    volumes:
+      - ./filebeat/config/filebeat.yml:/usr/share/filebeat/filebeat.yml
+      - ./filebeat/data:/usr/share/filebeat/data
+      - /var/run/docker.sock:/var/run/docker.sock
+      # This is needed for filebeat to load container log path as specified in filebeat.yml
+      - /var/lib/docker/containers/:/var/lib/docker/containers/:ro
+
+      # # This is needed for filebeat to load jenkins build log path as specified in filebeat.yml
+      # - /var/lib/docker/volumes/jenkins_home/_data/jobs/:/var/lib/docker/volumes/jenkins_home/_data/jobs/:ro
+
+      # This is needed for filebeat to load logs for system and auth modules
+      - /var/log/:/var/log/:ro
+      # This is needed for filebeat to load logs for auditd module
+      # - /var/log/audit/:/var/log/audit/:ro
+    environment:
+      - ELASTICSEARCH_HOST="elasticsearch"
+      - KIBANA_HOST="kibana"
+      # - ELASTICSEARCH_USERNAME=${ELASTICSEARCH_USERNAME:-elastic}
+      # - ELASTICSEARCH_PASSWORD=${ELASTICSEARCH_PASSWORD:-changeme}
+    # disable strict permission checks
+    command: ["--strict.perms=false"]
+    networks:
+      - net
+
+# -----------------------------------------------------------------------------
+  kibana:
+# -----------------------------------------------------------------------------
+    image: docker.elastic.co/kibana/kibana:7.3.2
+    hostname: kibana
+    depends_on:
+      - elasticsearch
+    environment:
+      elasticsearch.url: "http://elasticsearch:9200"
+    networks:
+      - net
+
+# -----------------------------------------------------------------------------
+  prometheus:
+# -----------------------------------------------------------------------------
+    image: prom/prometheus:v2.12.0
+    hostname: prometheus
+    volumes:
+      - ./prometheus/:/etc/prometheus/
+      - prometheus:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/etc/prometheus/console_libraries'
+      - '--web.console.templates=/etc/prometheus/consoles'
+      - '--storage.tsdb.retention.time=200h'
+      - '--web.enable-lifecycle'
+    networks:
+      - net
+
+# -----------------------------------------------------------------------------
+  alertmanager:
+# -----------------------------------------------------------------------------
+    image: prom/alertmanager:v0.19.0
+    hostname: alertmanager
+    depends_on:
+      - prometheus
+    volumes:
+      - ./alertmanager/:/etc/alertmanager/
+    command:
+      - '--config.file=/etc/alertmanager/config.yml'
+      - '--storage.path=/alertmanager'
+    networks:
+      - net
+
+# -----------------------------------------------------------------------------
+  nodeexporter:
+# -----------------------------------------------------------------------------
+    image: prom/node-exporter:v0.18.1
+    hostname: nodeexporter
+    user: root
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.rootfs=/rootfs'
+      - '--path.sysfs=/host/sys'
+      - '--collector.filesystem.ignored-mount-points=^/(sys|proc|dev|host|etc)($$|/)'
+    networks:
+      - net
+# -----------------------------------------------------------------------------
+  cadvisor:
+# -----------------------------------------------------------------------------
+    image: google/cadvisor:v0.33.0
+    hostname: cadvisor
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:rw
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /cgroup:/cgroup:ro
+    networks:
+      - net
+
+# -----------------------------------------------------------------------------
+  grafana:
+# -----------------------------------------------------------------------------
+    image: grafana/grafana:6.3.5
+    hostname: grafana
+    volumes:
+      - grafana:/var/lib/grafana
+      - ./grafana/datasources:/etc/grafana/datasources
+      - ./grafana/dashboards:/etc/grafana/dashboards
+      - ./grafana/setup.sh:/setup.sh
+    entrypoint: /setup.sh
+    environment:
+      - GF_SECURITY_ADMIN_USER=${ADMIN_USER:-admin}
+      - GF_SECURITY_ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin}
+      - GF_USERS_ALLOW_SIGN_UP=false
+    networks:
+      - net
+
+# -----------------------------------------------------------------------------
+  pushgateway:
+# -----------------------------------------------------------------------------
+    image: prom/pushgateway:v0.9.1
+    hostname: pushgateway
+    networks:
+      - net
+
+# -----------------------------------------------------------------------------
+  caddy:
+# -----------------------------------------------------------------------------
+    image: stefanprodan/caddy
+    hostname: caddy
+    ports:
+      - "3000:3000"
+      - "9090:9090"
+      - "9093:9093"
+      - "9091:9091"
+      - "5601:5601"
+    volumes:
+      - ./caddy/:/etc/caddy/
+    environment:
+      - ADMIN_USER=${ADMIN_USER:-admin}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin}
+    networks:
+      - net
+
+# -----------------------------------------------------------------------------
+# END OF FILE
+# -----------------------------------------------------------------------------

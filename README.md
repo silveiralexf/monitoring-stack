@@ -151,7 +151,7 @@ curl -v -XPOST -D- 'http://kibana:5601/api/saved_objects/index-pattern' \
     -d '{"attributes":{"title":"logstash-*","timeFieldName":"@timestamp"}}'
 ```
 
-####Manually creating Filebeat index pattern on Kibana
+#### Manually creating Filebeat index pattern on Kibana
 
 ```shell
 curl -v -XPOST -D- 'http://kibana:5601/api/saved_objects/index-pattern' \
